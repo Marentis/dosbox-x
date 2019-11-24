@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2002-2015  The DOSBox Team
+ *  Copyright (C) 2002-2019  The DOSBox Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA.
  */
 
 #include <assert.h>
@@ -120,7 +120,7 @@ void MoveCaretBackwards()
 void DOS_Shell::InputCommand(char * line) {
 	Bitu size=CMD_MAXLINE-2; //lastcharacter+0
 	Bit8u c;Bit16u n=1;
-	Bitu str_len=0;Bitu str_index=0;
+	Bit16u str_len=0;Bit16u str_index=0;
 	Bit16u len=0;
 	bool current_hist=false; // current command stored in history?
     Bit16u cr;
@@ -242,8 +242,8 @@ void DOS_Shell::InputCommand(char * line) {
                         line[str_index ++] = (char)c;
                         DOS_WriteFile(STDOUT,&c,&n);
                     }
-                    str_len = str_index = (Bitu)it_history->length();
-                    size = CMD_MAXLINE - str_index - 2;
+                    str_len = str_index = (Bit16u)it_history->length();
+                    size = (unsigned int)CMD_MAXLINE - str_index - 2u;
                     line[str_len] = 0;
                 }
                 break;
@@ -338,6 +338,11 @@ void DOS_Shell::InputCommand(char * line) {
                     l_history.push_front(line);
                 }
 
+                // ensure we're at end to handle all cases
+                while (str_index < str_len) {
+                    outc((Bit8u)line[str_index++]);
+                }
+
                 for (;str_index>0; str_index--) {
                     // removes all characters
                     outc(8); outc(' '); outc(8);
@@ -345,19 +350,19 @@ void DOS_Shell::InputCommand(char * line) {
                 strcpy(line, it_history->c_str());
                 len = (Bit16u)it_history->length();
                 str_len = str_index = len;
-                size = CMD_MAXLINE - str_index - 2;
+                size = (unsigned int)CMD_MAXLINE - str_index - 2u;
                 DOS_WriteFile(STDOUT, (Bit8u *)line, &len);
-                it_history ++;
+                ++it_history;
                 break;
 
             case 0x5000:	/* DOWN */
                 if (l_history.empty() || it_history == l_history.begin()) break;
 
                 // not very nice but works ..
-                it_history --;
+                --it_history;
                 if (it_history == l_history.begin()) {
                     // no previous commands in history
-                    it_history ++;
+                    ++it_history;
 
                     // remove current command from history
                     if (current_hist) {
@@ -365,7 +370,12 @@ void DOS_Shell::InputCommand(char * line) {
                         l_history.pop_front();
                     }
                     break;
-                } else it_history --;
+                } else --it_history;
+
+                // ensure we're at end to handle all cases
+                while (str_index < str_len) {
+                    outc((Bit8u)line[str_index++]);
+                }
 
                 for (;str_index>0; str_index--) {
                     // removes all characters
@@ -374,9 +384,9 @@ void DOS_Shell::InputCommand(char * line) {
                 strcpy(line, it_history->c_str());
                 len = (Bit16u)it_history->length();
                 str_len = str_index = len;
-                size = CMD_MAXLINE - str_index - 2;
+                size = (unsigned int)CMD_MAXLINE - str_index - 2u;
                 DOS_WriteFile(STDOUT, (Bit8u *)line, &len);
-                it_history ++;
+                ++it_history;
 
                 break;
             case 0x5300:/* DELETE */
@@ -386,8 +396,8 @@ void DOS_Shell::InputCommand(char * line) {
                     Bit8u* text=reinterpret_cast<Bit8u*>(&line[str_index+1]);
                     DOS_WriteFile(STDOUT,text,&a);//write buffer to screen
                     outc(' ');outc(8);
-                    for(Bitu i=str_index;i<str_len-1;i++) {
-                        line[i]=line[i+1];
+                    for(Bitu i=str_index;i<(str_len-1u);i++) {
+                        line[i]=line[i+1u];
                         outc(8);
                     }
                     line[--str_len]=0;
@@ -397,7 +407,7 @@ void DOS_Shell::InputCommand(char * line) {
             case 0x0F00:	/* Shift-Tab */
                 if (l_completion.size()) {
                     if (it_completion == l_completion.begin()) it_completion = l_completion.end (); 
-                    it_completion--;
+                    --it_completion;
 
                     if (it_completion->length()) {
                         for (;str_index > completion_index; str_index--) {
@@ -408,7 +418,7 @@ void DOS_Shell::InputCommand(char * line) {
                         strcpy(&line[completion_index], it_completion->c_str());
                         len = (Bit16u)it_completion->length();
                         str_len = str_index = (Bitu)(completion_index + len);
-                        size = CMD_MAXLINE - str_index - 2;
+                        size = (unsigned int)CMD_MAXLINE - str_index - 2u;
                         DOS_WriteFile(STDOUT, (Bit8u *)it_completion->c_str(), &len);
                     }
                 }
@@ -416,7 +426,7 @@ void DOS_Shell::InputCommand(char * line) {
             case 0x08:				/* BackSpace */
                 if (str_index) {
                     outc(8);
-                    Bit32u str_remain=str_len - str_index;
+                    Bit32u str_remain=(Bit32u)(str_len - str_index);
                     size++;
                     if (str_remain) {
                         memmove(&line[str_index-1],&line[str_index],str_remain);
@@ -447,13 +457,13 @@ void DOS_Shell::InputCommand(char * line) {
                 str_len = 0;    // prevent multiple adds of the same line
                 break;
             case 0x0d:				/* Don't care, and return */
-                if(!echo) outc('\n');
+                if(!echo) { outc('\r'); outc('\n'); }
                 size=0;			//Kill the while loop
                 break;
             case'\t':
                 {
                     if (l_completion.size()) {
-                        it_completion ++;
+                        ++it_completion;
                         if (it_completion == l_completion.end()) it_completion = l_completion.begin();
                     } else {
                         // build new completion list
@@ -476,17 +486,21 @@ void DOS_Shell::InputCommand(char * line) {
                         if ((path = strrchr(line+completion_index,'/'))) completion_index = (Bit16u)(path-line+1);
 
                         // build the completion list
-                        char mask[DOS_PATHLENGTH];
+                        char mask[DOS_PATHLENGTH] = {0};
+                        if (strlen(p_completion_start) + 3 >= DOS_PATHLENGTH) {
+                            //Beep;
+                            break;
+                        }
                         if (p_completion_start) {
-                            strcpy(mask, p_completion_start);
+                            safe_strncpy(mask, p_completion_start,DOS_PATHLENGTH);
                             char* dot_pos=strrchr(mask,'.');
                             char* bs_pos=strrchr(mask,'\\');
                             char* fs_pos=strrchr(mask,'/');
                             char* cl_pos=strrchr(mask,':');
                             // not perfect when line already contains wildcards, but works
                             if ((dot_pos-bs_pos>0) && (dot_pos-fs_pos>0) && (dot_pos-cl_pos>0))
-                                strcat(mask, "*");
-                            else strcat(mask, "*.*");
+                                strncat(mask, "*",DOS_PATHLENGTH - 1);
+                            else strncat(mask, "*.*",DOS_PATHLENGTH - 1);
                         } else {
                             strcpy(mask, "*.*");
                         }
@@ -508,12 +522,11 @@ void DOS_Shell::InputCommand(char * line) {
                             dta.GetResult(name,sz,date,time,att);
                             // add result to completion list
 
-                            char *ext;	// file extension
                             if (strcmp(name, ".") && strcmp(name, "..")) {
                                 if (dir_only) { //Handle the dir only case different (line starts with cd)
                                     if(att & DOS_ATTR_DIRECTORY) l_completion.push_back(name);
                                 } else {
-                                    ext = strrchr(name, '.');
+                                    char *ext = strrchr(name, '.'); // file extension
                                     if (ext && (strcmp(ext, ".BAT") == 0 || strcmp(ext, ".COM") == 0 || strcmp(ext, ".EXE") == 0))
                                         // we add executables to the a seperate list and place that list infront of the normal files
                                         executable.push_front(name);
@@ -538,7 +551,7 @@ void DOS_Shell::InputCommand(char * line) {
                         strcpy(&line[completion_index], it_completion->c_str());
                         len = (Bit16u)it_completion->length();
                         str_len = str_index = (Bitu)(completion_index + len);
-                        size = CMD_MAXLINE - str_index - 2;
+                        size = (unsigned int)CMD_MAXLINE - str_index - 2u;
                         DOS_WriteFile(STDOUT, (Bit8u *)it_completion->c_str(), &len);
                     }
                 }
@@ -596,7 +609,7 @@ void DOS_Shell::InputCommand(char * line) {
                     }
                     line[++str_len]=0;//new end (as the internal buffer moved one place to the right
                     size--;
-                };
+                }
 
                 line[str_index]=(char)(cr&0xFF);
                 str_index ++;
@@ -707,16 +720,16 @@ void DOS_Shell::ProcessCmdLineEnvVarStitution(char *line) {
 				 * So the below code has funny conditions to match Win95's weird rules on what
 				 * consitutes valid or invalid %variable% names. */
 				if (*r == '%' && ((spaces > 0 && chars == 0) || (spaces == 0 && chars > 0))) {
-					std::string temp;
+					std::string temp2;
 
 					/* valid name found. substitute */
 					*r++ = 0; /* ASCIIZ snip */
-					if (GetEnvStr(name,temp)) {
-						size_t equ_pos = temp.find_first_of('=');
+					if (GetEnvStr(name,temp2)) {
+						size_t equ_pos = temp2.find_first_of('=');
 						if (equ_pos != std::string::npos) {
-							const char *base = temp.c_str();
+							const char *base = temp2.c_str();
 							const char *value = base + equ_pos + 1;
-							const char *fence = base + temp.length();
+							const char *fence = base + temp2.length();
 							assert(value >= base && value <= fence);
 							size_t len = (size_t)(fence-value);
 
@@ -782,7 +795,7 @@ bool DOS_Shell::Execute(char * name,char * args) {
 		}
 	}else{
 		line[0]=0;
-	};
+	}
 
 	/* check for a drive change */
 	if (((strcmp(name + 1, ":") == 0) || (strcmp(name + 1, ":\\") == 0)) && isalpha(*name))
@@ -935,10 +948,43 @@ continue_1:
 		cmdtail.buffer[strlen(line)]=0xd;
 		/* Copy command line in stack block too */
 		MEM_BlockWrite(SegPhys(ss)+reg_sp+0x100,&cmdtail,128);
+		
+		/* Split input line up into parameters, using a few special rules, most notable the one for /AAA => A\0AA
+		 * Qbix: It is extremly messy, but this was the only way I could get things like /:aa and :/aa to work correctly */
+		
+		//Prepare string first
+		char parseline[258] = { 0 };
+		for(char *pl = line,*q = parseline; *pl ;pl++,q++) {
+			if (*pl == '=' || *pl == ';' || *pl ==',' || *pl == '\t' || *pl == ' ') *q = 0; else *q = *pl; //Replace command seperators with 0.
+		} //No end of string \0 needed as parseline is larger than line
+
+		for(char* p = parseline; (p-parseline) < 250 ;p++) { //Stay relaxed within boundaries as we have plenty of room
+			if (*p == '/') { //Transform /Hello into H\0ello
+				*p = 0;
+				p++;
+				while ( *p == 0 && (p-parseline) < 250) p++; //Skip empty fields
+				if ((p-parseline) < 250) { //Found something. Lets get the first letter and break it up
+					p++;
+					memmove(static_cast<void*>(p + 1),static_cast<void*>(p),(250u-(unsigned int)(p-parseline)));
+					if ((p-parseline) < 250) *p = 0;
+				}
+			}
+		}
+		parseline[255] = parseline[256] = parseline[257] = 0; //Just to be safe.
+
 		/* Parse FCB (first two parameters) and put them into the current DOS_PSP */
 		Bit8u add;
-		FCB_Parsename(dos.psp(),0x5C,0x00,cmdtail.buffer,&add);
-		FCB_Parsename(dos.psp(),0x6C,0x00,&cmdtail.buffer[add],&add);
+		Bit16u skip = 0;
+		//find first argument, we end up at parseline[256] if there is only one argument (similar for the second), which exists and is 0.
+		while(skip < 256 && parseline[skip] == 0) skip++;
+		FCB_Parsename(dos.psp(),0x5C,0x01,parseline + skip,&add);
+		skip += add;
+		
+		//Move to next argument if it exists
+		while(parseline[skip] != 0) skip++;  //This is safe as there is always a 0 in parseline at the end.
+		while(skip < 256 && parseline[skip] == 0) skip++; //Which is higher than 256
+		FCB_Parsename(dos.psp(),0x6C,0x01,parseline + skip,&add);
+
 		block.exec.fcb1=RealMake(dos.psp(),0x5C);
 		block.exec.fcb2=RealMake(dos.psp(),0x6C);
 		/* Set the command line in the block and save it */
@@ -1008,14 +1054,13 @@ char * DOS_Shell::Which(char * name) {
 	pathenv = strchr(pathenv,'=');
 	if (!pathenv) return 0;
 	pathenv++;
-	Bitu i_path = 0;
 	while (*pathenv) {
 		/* remove ; and ;; at the beginning. (and from the second entry etc) */
 		while(*pathenv == ';')
 			pathenv++;
 
 		/* get next entry */
-		i_path = 0; /* reset writer */
+		Bitu i_path = 0; /* reset writer */
 		while(*pathenv && (*pathenv !=';') && (i_path < DOS_PATHLENGTH) )
 			path[i_path++] = *pathenv++;
 

@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2002-2015  The DOSBox Team
+ *  Copyright (C) 2002-2019  The DOSBox Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA.
  */
 
 #include <stdio.h>
@@ -85,6 +85,7 @@
 #define BIOS_VDU_CONTROL                0x465
 #define BIOS_VDU_COLOR_REGISTER         0x466
 /* 0x467-0x468 is reserved */
+#define BIOS_LAST_UNEXPECTED_IRQ        0x46b
 #define BIOS_TIMER                      0x46c
 #define BIOS_24_HOURS_FLAG              0x470
 #define BIOS_CTRL_BREAK_FLAG            0x471
@@ -123,6 +124,14 @@
 #define BIOS_KEYBOARD_FLAGS3_ID_READ_IN_PROCESS	(1 << 7)
 
 #define BIOS_KEYBOARD_LEDS              0x497
+#define BIOS_KEYBOARD_LEDS_SCROLL_LOCK    (1 << 0)
+#define BIOS_KEYBOARD_LEDS_NUM_LOCK       (1 << 1)
+#define BIOS_KEYBOARD_LEDS_CAPS_LOCK      (1 << 2)
+#define BIOS_KEYBOARD_LEDS_CIRCUS         (1 << 3)
+#define BIOS_KEYBOARD_LEDS_ACK            (1 << 4)
+#define BIOS_KEYBOARD_LEDS_RESEND         (1 << 5)
+#define BIOS_KEYBOARD_LEDS_MODE           (1 << 6)
+#define BIOS_KEYBOARD_LEDS_TRANSMIT_ERROR (1 << 7)
 
 #define BIOS_WAIT_FLAG_POINTER          0x498
 #define BIOS_WAIT_FLAG_COUNT	        0x49c		
@@ -149,6 +158,7 @@ extern Bitu BIOS_DEFAULT_IRQ0_LOCATION;		// (RealMake(0xf000,0xfea5))
 extern Bitu BIOS_DEFAULT_IRQ1_LOCATION;		// (RealMake(0xf000,0xe987))
 extern Bitu BIOS_DEFAULT_IRQ2_LOCATION;		// (RealMake(0xf000,0xff55))
 extern Bitu BIOS_DEFAULT_HANDLER_LOCATION;	// (RealMake(0xf000,0xff53))
+extern Bitu BIOS_DEFAULT_INT5_LOCATION;		// (RealMake(0xf000,0xff54))
 extern Bitu BIOS_VIDEO_TABLE_LOCATION;		// (RealMake(0xf000,0xf0a4))
 extern Bitu BIOS_DEFAULT_RESET_LOCATION;	// RealMake(0xf000,0xe05b)
 extern Bitu BIOS_VIDEO_TABLE_SIZE;
@@ -166,25 +176,30 @@ extern RegionAllocTracking rombios_alloc;
 //#define MAX_SWAPPABLE_DISKS 20
 
 void BIOS_ZeroExtendedSize(bool in);
-void char_out(Bit8u chr,Bit32u att,Bit8u page);
-void INT10_StartUp(void);
-void INT16_StartUp(void);
-void INT2A_StartUp(void);
-void INT2F_StartUp(void);
-void INT33_StartUp(void);
-void INT13_StartUp(void);
 
 bool BIOS_AddKeyToBuffer(Bit16u code);
 
 void INT10_ReloadRomFonts();
 
-void BIOS_SetComPorts (Bit16u baseaddr[]);
 void BIOS_SetLPTPort (Bitu port, Bit16u baseaddr);
 
 // \brief Synchronizes emulator num lock state with host.
 void BIOS_SynchronizeNumLock();
 
+// \brief Synchronizes emulator caps lock state with host.
+void BIOS_SynchronizeCapsLock();
+
+// \brief Synchronizes emulator scroll lock state with host.
+void BIOS_SynchronizeScrollLock();
+
 bool ISAPNP_RegisterSysDev(const unsigned char *raw,Bitu len,bool already=false);
+
+enum {
+    UNHANDLED_IRQ_SIMPLE=0,
+    UNHANDLED_IRQ_COOPERATIVE_2ND       // PC-98 type IRQ 8-15 handling
+};
+
+extern int unhandled_irq_method;
 
 class ISAPnPDevice {
 public:

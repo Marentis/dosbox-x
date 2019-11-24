@@ -9,7 +9,7 @@ private:
 	static const unsigned int bufferSize = 1024;
 	volatile unsigned int startpos;
 	volatile unsigned int endpos;
-	Bit64u ringBuffer[bufferSize];
+    Bit64u ringBuffer[bufferSize] = {};
 
 public:
 	RingBuffer() {
@@ -49,11 +49,11 @@ private:
 	SDL_Thread *thread;
 	SDL_mutex *synthMutex;
 	SDL_semaphore *procIdleSem, *mixerReqSem;
-	Bit16s mixerBuffer[2 * MIXER_BUFFER_SIZE];
-	volatile Bitu mixerBufferSize;
-	volatile bool stopProcessing;
-	bool open, noise, reverseStereo, renderInThread;
-	Bit16s numPartials;
+    Bit16s mixerBuffer[2 * MIXER_BUFFER_SIZE] = {};
+	volatile Bitu mixerBufferSize = 0;
+	volatile bool stopProcessing = false;
+	bool open, noise = false, reverseStereo = false, renderInThread = false;
+	Bit16s numPartials = 0;
 
 	class MT32ReportHandler : public MT32Emu::ReportHandler {
 	protected:
@@ -218,7 +218,7 @@ public:
 
 	void PlaySysex(Bit8u *sysex, Bitu len) {
 		if (renderInThread) SDL_LockMutex(synthMutex);
-		synth->playSysex(sysex, len);
+		synth->playSysex(sysex, (Bit32u)len);
 		if (renderInThread) SDL_UnlockMutex(synthMutex);
 	}
 
@@ -236,7 +236,7 @@ private:
 	void render(Bitu len, Bit16s *buf) {
 		Bit32u msg = midiBuffer.get();
 		if (msg != 0) synth->playMsg(msg);
-		synth->render(buf, len);
+		synth->render(buf, (Bit32u)len);
 		if (reverseStereo) {
 			Bit16s *revBuf = buf;
 			for(Bitu i = 0; i < len; i++) {

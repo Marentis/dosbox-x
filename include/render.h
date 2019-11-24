@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2002-2015  The DOSBox Team
+ *  Copyright (C) 2002-2019  The DOSBox Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA.
  */
 
 #ifndef DOSBOX_RENDER_H
@@ -30,12 +30,6 @@
 #define RENDER_SKIP_CACHE	16
 //Enable this for scalers to support 0 input for empty lines
 //#define RENDER_NULL_INPUT
-
-enum SCREEN_TYPES {
-	SCREEN_SURFACE,
-	SCREEN_OPENGL,
-	SCREEN_DIRECT3D
-};
 
 enum ASPECT_MODES {
     ASPECT_FALSE = 0
@@ -97,16 +91,6 @@ typedef struct {
 		Bit8u *cacheRead;
 		Bitu inHeight, inLine, outLine;
 	} scale;
-#if C_XBRZ
-    struct {
-        bool enable;
-        bool postscale_bilinear;
-        int task_granularity;
-        int fixed_scale_factor;
-        int max_scale_factor;
-        bool scale_on;
-    } xBRZ;
-#endif
     RenderPal_t pal;
 	bool updating;
 	bool active;

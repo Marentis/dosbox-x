@@ -217,9 +217,9 @@ double distYCbCrBuffered(uint32_t pix1, uint32_t pix2)
     const int g_diff = static_cast<int>(getGreen(pix1)) - getGreen(pix2);
     const int b_diff = static_cast<int>(getBlue (pix1)) - getBlue (pix2);
 
-    return diffToDist[(((r_diff + 0xFF) / 2) << 16) | //slightly reduce precision (division by 2) to squeeze value into single byte
-                                        (((g_diff + 0xFF) / 2) <<  8) |
-                                        (( b_diff + 0xFF) / 2)];
+    return diffToDist[size_t((((r_diff + 0xFF) / 2) << 16) | //slightly reduce precision (division by 2) to squeeze value into single byte
+                             (((g_diff + 0xFF) / 2) <<  8) |
+                             (((b_diff + 0xFF) / 2)      ))];
 #else //not noticeably faster:
     const int r_diff_tmp = ((pix1 & 0xFF0000) + 0xFF0000 - (pix2 & 0xFF0000)) / 2;
     const int g_diff_tmp = ((pix1 & 0x00FF00) + 0x00FF00 - (pix2 & 0x00FF00)) / 2; //slightly reduce precision (division by 2) to squeeze value into single byte
@@ -414,7 +414,7 @@ void blendPixel(const Kernel_3x3& ker,
                 return true;
 
             //make sure there is no second blending in an adjacent rotation for this pixel: handles insular pixels, mario eyes
-            if (getTopR(blend) != BLEND_NONE && !eq(e, g)) //but support double-blending for 90° corners
+            if (getTopR(blend) != BLEND_NONE && !eq(e, g)) //but support double-blending for 90Â° corners
                 return false;
             if (getBottomL(blend) != BLEND_NONE && !eq(e, c))
                 return false;
@@ -482,7 +482,7 @@ void scaleImage(const uint32_t* src, uint32_t* trg, int srcWidth, int srcHeight,
     //"use" space at the end of the image as temporary buffer for "on the fly preprocessing": we even could use larger area of
     //"sizeof(uint32_t) * srcWidth * (yLast - yFirst)" bytes without risk of accidental overwriting before accessing
     const int bufferSize = srcWidth;
-    unsigned char* preProcBuffer = reinterpret_cast<unsigned char*>(trg + yLast * Scaler::scale * trgWidth) - bufferSize;
+    unsigned char* preProcBuffer = reinterpret_cast<unsigned char*>(trg + (size_t)yLast * Scaler::scale * trgWidth) - bufferSize;
     std::fill(preProcBuffer, preProcBuffer + bufferSize, '\0');
     static_assert(BLEND_NONE == 0, "");
 
@@ -492,10 +492,10 @@ void scaleImage(const uint32_t* src, uint32_t* trg, int srcWidth, int srcHeight,
     {
         const int y = yFirst - 1;
 
-        const uint32_t* s_m1 = src + srcWidth * std::max(y - 1, 0);
-        const uint32_t* s_0  = src + srcWidth * y; //center line
-        const uint32_t* s_p1 = src + srcWidth * std::min(y + 1, srcHeight - 1);
-        const uint32_t* s_p2 = src + srcWidth * std::min(y + 2, srcHeight - 1);
+        const uint32_t* s_m1 = src + (size_t)srcWidth * std::max(y - 1, 0);
+        const uint32_t* s_0  = src + (size_t)srcWidth * y; //center line
+        const uint32_t* s_p1 = src + (size_t)srcWidth * std::min(y + 1, srcHeight - 1);
+        const uint32_t* s_p2 = src + (size_t)srcWidth * std::min(y + 2, srcHeight - 1);
 
         for (int x = 0; x < srcWidth; ++x)
         {
@@ -543,12 +543,12 @@ void scaleImage(const uint32_t* src, uint32_t* trg, int srcWidth, int srcHeight,
 
     for (int y = yFirst; y < yLast; ++y)
     {
-        uint32_t* out = trg + Scaler::scale * y * trgWidth; //consider MT "striped" access
+        uint32_t* out = trg + (size_t)Scaler::scale * y * trgWidth; //consider MT "striped" access
 
-        const uint32_t* s_m1 = src + srcWidth * std::max(y - 1, 0);
-        const uint32_t* s_0  = src + srcWidth * y; //center line
-        const uint32_t* s_p1 = src + srcWidth * std::min(y + 1, srcHeight - 1);
-        const uint32_t* s_p2 = src + srcWidth * std::min(y + 2, srcHeight - 1);
+        const uint32_t* s_m1 = src + (size_t)srcWidth * std::max(y - 1, 0);
+        const uint32_t* s_0  = src + (size_t)srcWidth * y; //center line
+        const uint32_t* s_p1 = src + (size_t)srcWidth * std::min(y + 1, srcHeight - 1);
+        const uint32_t* s_p2 = src + (size_t)srcWidth * std::min(y + 2, srcHeight - 1);
 
         unsigned char blend_xy1 = 0; //corner blending for current (x, y + 1) position
 
@@ -610,7 +610,7 @@ void scaleImage(const uint32_t* src, uint32_t* trg, int srcWidth, int srcHeight,
             }
 
             //fill block of size scale * scale with the given color
-            fillBlock(out, trgWidth * sizeof(uint32_t), ker4.f, Scaler::scale, Scaler::scale);
+            fillBlock(out, trgWidth * (int)sizeof(uint32_t), ker4.f, Scaler::scale, Scaler::scale);
             //place *after* preprocessing step, to not overwrite the results while processing the the last pixel!
 
             //blend four corners of current pixel
@@ -1006,6 +1006,8 @@ struct ColorDistanceRGB
 {
     static double dist(uint32_t pix1, uint32_t pix2, double luminanceWeight)
     {
+        (void)luminanceWeight;
+
         return distYCbCrBuffered(pix1, pix2);
 
         //if (pix1 == pix2) //about 4% perf boost
@@ -1018,6 +1020,8 @@ struct ColorDistanceARGB
 {
     static double dist(uint32_t pix1, uint32_t pix2, double luminanceWeight)
     {
+        (void)luminanceWeight;
+
         const double a1 = getAlpha(pix1) / 255.0 ;
         const double a2 = getAlpha(pix2) / 255.0 ;
         /*
@@ -1153,8 +1157,8 @@ bool xbrz::equalColorTest(uint32_t col1, uint32_t col2, ColorFormat colFmt, doub
 void xbrz::bilinearScale(const uint32_t* src, int srcWidth, int srcHeight,
                          /**/  uint32_t* trg, int trgWidth, int trgHeight)
 {
-    bilinearScale(src, srcWidth, srcHeight, srcWidth * sizeof(uint32_t),
-                  trg, trgWidth, trgHeight, trgWidth * sizeof(uint32_t),
+    bilinearScale(src, srcWidth, srcHeight, srcWidth * (int)sizeof(uint32_t),
+                  trg, trgWidth, trgHeight, trgWidth * (int)sizeof(uint32_t),
     0, trgHeight, [](uint32_t pix) { return pix; });
 }
 
@@ -1162,8 +1166,8 @@ void xbrz::bilinearScale(const uint32_t* src, int srcWidth, int srcHeight,
 void xbrz::nearestNeighborScale(const uint32_t* src, int srcWidth, int srcHeight,
                                 /**/  uint32_t* trg, int trgWidth, int trgHeight)
 {
-    nearestNeighborScale(src, srcWidth, srcHeight, srcWidth * sizeof(uint32_t),
-                         trg, trgWidth, trgHeight, trgWidth * sizeof(uint32_t),
+    nearestNeighborScale(src, srcWidth, srcHeight, srcWidth * (int)sizeof(uint32_t),
+                         trg, trgWidth, trgHeight, trgWidth * (int)sizeof(uint32_t),
     0, trgHeight, [](uint32_t pix) { return pix; });
 }
 

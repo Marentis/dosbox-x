@@ -206,12 +206,14 @@ LRESULT DIB_HandleMessage(_THIS, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
 	switch (msg) {
 		case WM_KILLFOCUS:
+# ifndef SDL_WIN32_HX_DOS
 			if (!SDL_resizing &&
 				 SDL_PublicSurface &&
 				(SDL_PublicSurface->flags & SDL_FULLSCREEN)) {
 				/* In fullscreen mode, this window must have focus... or else we must exit fullscreen mode! */
 				ShowWindow(ParentWindowHWND, SW_RESTORE);
 			}
+# endif
 			break;
 		case WM_SYSKEYDOWN:
 		case WM_KEYDOWN: {
@@ -227,10 +229,6 @@ LRESULT DIB_HandleMessage(_THIS, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 				wParam = rotateKey(wParam, this->hidden->gapiInfo->coordinateTransform);
 			}
 #endif 
-			/* Ignore repeated keys */
-			if ( lParam&REPEATED_KEYMASK ) {
-				return(0);
-			}
 			switch (wParam) {
 				case VK_CONTROL:
 					if ( lParam&EXTENDED_KEYMASK )
@@ -243,21 +241,27 @@ LRESULT DIB_HandleMessage(_THIS, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 					{
 					Uint8 *state = SDL_GetKeyState(NULL);
 					if (state[SDLK_LSHIFT] == SDL_RELEASED && (GetKeyState(VK_LSHIFT) & 0x8000)) {
-						wParam = VK_LSHIFT;
-					} else if (state[SDLK_RSHIFT] == SDL_RELEASED && (GetKeyState(VK_RSHIFT) & 0x8000)) {
-						wParam = VK_RSHIFT;
-					} else {
+                        posted = SDL_PrivateKeyboard(SDL_PRESSED,
+                            TranslateKey(wParam = VK_LSHIFT, HIWORD(lParam), &keysym, 0));
+                    }
+                    if (state[SDLK_RSHIFT] == SDL_RELEASED && (GetKeyState(VK_RSHIFT) & 0x8000)) {
+                        posted = SDL_PrivateKeyboard(SDL_PRESSED,
+                            TranslateKey(wParam = VK_RSHIFT, HIWORD(lParam), &keysym, 0));
+					}
+                    if (wParam == VK_SHIFT) {
 						/* Win9x */
 						int sc = HIWORD(lParam) & 0xFF;
 
 						if (sc == 0x2A)
 							wParam = VK_LSHIFT;
-						else
-						if (sc == 0x36)
+						else if (sc == 0x36)
 							wParam = VK_RSHIFT;
 						else
 							wParam = VK_LSHIFT;
 					}
+                    else {
+                        return(0);
+                    }
 					}
 					break;
 				case VK_MENU:
@@ -266,6 +270,12 @@ LRESULT DIB_HandleMessage(_THIS, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 					else
 						wParam = VK_LMENU;
 					break;
+                default:
+                    /* Ignore repeated keys */
+                    if (lParam&REPEATED_KEYMASK) {
+                        return(0);
+                    }
+                    break;
 			}
 #ifdef NO_GETKEYBOARDSTATE
 			/* this is the workaround for the missing ToAscii() and ToUnicode() in CE (not necessary at KEYUP!) */
@@ -317,29 +327,35 @@ LRESULT DIB_HandleMessage(_THIS, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 					else
 						wParam = VK_LCONTROL;
 					break;
-				case VK_SHIFT:
-					/* EXTENDED trick doesn't work here */
-					{
-					Uint8 *state = SDL_GetKeyState(NULL);
-					if (state[SDLK_LSHIFT] == SDL_PRESSED && !(GetKeyState(VK_LSHIFT) & 0x8000)) {
-						wParam = VK_LSHIFT;
-					} else if (state[SDLK_RSHIFT] == SDL_PRESSED && !(GetKeyState(VK_RSHIFT) & 0x8000)) {
-						wParam = VK_RSHIFT;
-					} else {
-						/* Win9x */
-						int sc = HIWORD(lParam) & 0xFF;
+                case VK_SHIFT:
+                    /* EXTENDED trick doesn't work here */
+                {
+                    Uint8 *state = SDL_GetKeyState(NULL);
+                    if (state[SDLK_LSHIFT] == SDL_PRESSED && !(GetKeyState(VK_LSHIFT) & 0x8000)) {
+                        posted = SDL_PrivateKeyboard(SDL_RELEASED,
+                            TranslateKey(wParam = VK_LSHIFT, HIWORD(lParam), &keysym, 0));
+                    }
+                    if (state[SDLK_RSHIFT] == SDL_PRESSED && !(GetKeyState(VK_RSHIFT) & 0x8000)) {
+                        posted = SDL_PrivateKeyboard(SDL_RELEASED,
+                            TranslateKey(wParam = VK_RSHIFT, HIWORD(lParam), &keysym, 0));
+                    }
+                    if (wParam == VK_SHIFT) {
+                        /* Win9x */
+                        int sc = HIWORD(lParam) & 0xFF;
 
-						if (sc == 0x2A)
-							wParam = VK_LSHIFT;
-						else
-						if (sc == 0x36)
-							wParam = VK_RSHIFT;
-						else
-							wParam = VK_LSHIFT;
-					}
-					}
-					break;
-				case VK_MENU:
+                        if (sc == 0x2A)
+                            wParam = VK_LSHIFT;
+                        else if (sc == 0x36)
+                            wParam = VK_RSHIFT;
+                        else
+                            wParam = VK_LSHIFT;
+                    }
+                    else {
+                        return(0);
+                    }
+                }
+                break;
+                case VK_MENU:
 					if ( lParam&EXTENDED_KEYMASK )
 						wParam = VK_RMENU;
 					else
@@ -472,6 +488,34 @@ void DIB_PumpEvents(_THIS)
 			DispatchMessage(&msg);
 		}
 	}
+
+    /* *sigh* It seems the Windows keyboard events allow us to sort of
+       differentiate left/right shift, but only as individual keys,
+       and Windows 10 won't send a WM_KEYUP if you release one shift
+       key while holding the other. Therefore, this hack:
+
+       If both shift keys are held down, poll the keyboard state to
+       detect when either one is released. */
+    Uint8 *state = SDL_GetKeyState(NULL);
+
+    if (state[SDLK_LSHIFT] == SDL_PRESSED && state[SDLK_RSHIFT] == SDL_PRESSED) {
+        if (state[SDLK_LSHIFT] == SDL_PRESSED) {
+            SDL_keysym keysym;
+
+            if (!(GetKeyState(VK_LSHIFT) & 0x8000)) {
+                SDL_PrivateKeyboard(SDL_RELEASED,
+                    TranslateKey(VK_LSHIFT, HIWORD(0), &keysym, 0));
+            }
+        }
+        if (state[SDLK_RSHIFT] == SDL_PRESSED) {
+            SDL_keysym keysym;
+
+            if (!(GetKeyState(VK_RSHIFT) & 0x8000)) {
+                SDL_PrivateKeyboard(SDL_RELEASED,
+                    TranslateKey(VK_RSHIFT, HIWORD(0), &keysym, 0));
+            }
+        }
+    }
 
 	if (!mouseMotion && now > (last_dib_mouse_motion + pollInterval))
 		mouseMotion = 1;
@@ -632,7 +676,7 @@ void DIB_InitOSKeymapPriv(void) {
 			VK_keymap[VK_OEM_6] = SDLK_RIGHTBRACKET;
 			VK_keymap[VK_OEM_5] = SDLK_JP_YEN;
 			break;
-	};
+	}
 
 	Arrows_keymap[3] = 0x25;
 	Arrows_keymap[2] = 0x26;
@@ -707,7 +751,7 @@ static int SDL_MapVirtualKey(int scancode, int vkey)
 static SDL_keysym *TranslateKey(WPARAM vkey, UINT scancode, SDL_keysym *keysym, int pressed)
 {
 	/* Set the keysym information */
-	keysym->win32_vk = vkey;
+	keysym->win32_vk = (Uint32)vkey;
 	keysym->scancode = (unsigned char) scancode;
 	keysym->mod = KMOD_NONE;
 	keysym->unicode = 0;
@@ -717,7 +761,7 @@ static SDL_keysym *TranslateKey(WPARAM vkey, UINT scancode, SDL_keysym *keysym, 
 		keysym->sym = SDLK_KP_ENTER;
 	}
 	else {
-		keysym->sym = VK_keymap[SDL_MapVirtualKey(scancode, vkey)];
+		keysym->sym = VK_keymap[SDL_MapVirtualKey(scancode, (int)vkey)];
 	}
 
 	if ( pressed && SDL_TranslateUNICODE ) {
@@ -734,7 +778,7 @@ static SDL_keysym *TranslateKey(WPARAM vkey, UINT scancode, SDL_keysym *keysym, 
 		 * so we handle it as a special case here */
 		if ((keystate[VK_NUMLOCK] & 1) && vkey >= VK_NUMPAD0 && vkey <= VK_NUMPAD9)
 		{
-			keysym->unicode = vkey - VK_NUMPAD0 + '0';
+			keysym->unicode = (Uint16)(vkey - VK_NUMPAD0 + '0');
 		}
 		else if (SDL_ToUnicode((UINT)vkey, scancode, keystate, wchars, sizeof(wchars)/sizeof(wchars[0]), 0) > 0)
 		{
@@ -810,22 +854,25 @@ LRESULT CALLBACK ParentWinMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
 			LeaveCriticalSection(&ParentWindowCritSec);
 
 			r = DefWindowProc(hwnd, msg, wParam, lParam);
-			nr = ParentWindowDeferredResizeRect;
+
+            EnterCriticalSection(&ParentWindowCritSec);
+
+            nr = ParentWindowDeferredResizeRect;
 			ParentWindowDeferredResizeRect.top = -1;
 			ParentWindowDeferredResizeRect.left = -1;
 			ParentWindowDeferredResizeRect.right = -1;
 			ParentWindowDeferredResizeRect.bottom = -1;
+            ParentWindowIsBeingResized = FALSE;
 
-			EnterCriticalSection(&ParentWindowCritSec);
-			ParentWindowIsBeingResized = FALSE;
-			LeaveCriticalSection(&ParentWindowCritSec);
+            LeaveCriticalSection(&ParentWindowCritSec);
 
 			/* SetWindowPos() gave us a deferred window position/size to apply after resize */
-			if (nr.right > 0 && nr.bottom > 0)
-				SetWindowPos(ParentWindowHWND, NULL,
-					nr.left, nr.top, nr.right - nr.left, nr.bottom - nr.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+            if (nr.right > 0 && nr.bottom > 0) {
+                SetWindowPos(ParentWindowHWND, NULL,
+                    nr.left, nr.top, nr.right - nr.left, nr.bottom - nr.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+            }
 
-			return r;
+ 			return r;
 		}
 		else {
 			/* fall through, to DefWindowProc() */
@@ -970,7 +1017,7 @@ int InitParentWindow(void) {
 				return 0;
 			}
 
-			if (--patience <= 0)
+			if (--patience == 0)
 				break;
 			else
 				Sleep(100);
@@ -1041,7 +1088,7 @@ int DIB_CreateWindow(_THIS)
 #ifdef SDL_WIN32_NO_PARENT_WINDOW
 # ifdef SDL_WIN32_HX_DOS
 		SDL_Window = CreateWindow(SDL_Appname, SDL_Appname,
-			WS_OVERLAPPED | WS_CAPTION | WS_MAXIMIZEBOX,
+			WS_POPUP, /* NTS: WS_OVERLAPPED implies WS_CAPTION */
 			0, 0, 640, 480, NULL, NULL, SDL_Instance, NULL);
 # else
 		SDL_Window = CreateWindow(SDL_Appname, SDL_Appname,

@@ -2,7 +2,7 @@
 /* Hand-edited by Jonathan Campbell for Visual Studio 2008 */
 
 /*
- *  Copyright (C) 2002-2013  The DOSBox Team
+ *  Copyright (C) 2002-2019  The DOSBox Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -16,7 +16,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA.
  */
 
 /* DOSBox-X currently targets Windows XP or higher. */
@@ -45,8 +45,20 @@
 /* Define to 1 to use inlined memory functions in cpu core */
 #define C_CORE_INLINE	1
 
+/* Define to 1 if you have the <d3d9.h> header file. */
+#if !defined(C_SDL2)
+#define HAVE_D3D9_H 1
+#endif
+
+#if HAVE_D3D9_H
+/* Define to 1 if you want to add Direct3D output to the list of available outputs */
+#define C_DIRECT3D 1
 /* Define to 1 to use Direct3D shaders, requires d3d9.h and libd3dx9 */
 #define C_D3DSHADERS 1
+#endif
+
+/* MT32 (munt) emulation */
+#define C_MT32 1
 
 /* Define to 1 to enable internal debugger, requires libcurses */
 #define C_DEBUG 1
@@ -58,14 +70,16 @@
    */
 #define C_DIRECTSERIAL 1
 
-#ifdef _M_AMD64 /* Microsoft C++ amd64 */
+#if defined (_M_AMD64) || defined (_M_ARM64) || defined (_M_ARM) /* Microsoft C++ amd64, arm32 and arm64 */
 # undef C_DYNAMIC_X86
 # undef C_TARGETCPU
+# define C_DYNREC 1
 #else
 /* The type of cpu this target has */
-#define C_TARGETCPU X86
+# define C_TARGETCPU X86
 /* Define to 1 to use x86 dynamic cpu core */
-# define C_DYNAMIC_X86			1
+# undef C_DYNAMIC_X86
+# define C_DYNREC 1
 #endif
 
 /* Define to 1 to enable fluidsynth MIDI synthesis */
@@ -73,6 +87,16 @@
 
 /* Define to 1 to enable floating point emulation */
 #define C_FPU					1
+
+/* Define to 1 to use a x86/x64 assembly fpu core */
+/* FIXME: VS2015 x86_64 will not allow inline asm! */
+#ifdef _M_AMD64 /* Microsoft C++ amd64 */
+//TODO
+#elif defined(_M_ARM64) || defined (_M_ARM) /* Microsoft C++ arm32 and arm64 */
+# undef C_FPU_X86
+#else
+# define C_FPU_X86 1
+#endif
 
 /* Determines if the compilers supports attributes for structures. */
 #undef C_HAS_ATTRIBUTE
@@ -85,7 +109,7 @@
 #undef C_HAVE_MPROTECT
 
 /* Define to 1 to enable heavy debugging, also have to enable C_DEBUG */
-#undef C_HEAVY_DEBUG
+#define C_HEAVY_DEBUG 1
 
 /* Define to 1 to enable IPX over Internet networking, requires SDL_net */
 #if !defined(C_SDL2)
@@ -100,13 +124,11 @@
 #define C_MODEM 1
 #endif
 
+/* Define to 1 to enable internal printer redirection support*/
+#define C_PRINTER 1
+
 /* Define to 1 to enable NE2000 ethernet passthrough, requires libpcap */
 #define C_NE2000 1
-
-/* Define to 1 to use opengl display output support */
-#if !defined(C_SDL2)
-#define C_OPENGL 1
-#endif
 
 /* Set to 1 to enable SDL 1.x support */
 #define C_SDL1 1
@@ -114,6 +136,13 @@
 /* Set to 1 to enable SDL 2.x support */
 /* #undef C_SDL2 */
 
+/* Define to 1 to use opengl display output support */
+/* TODO: Windows SDK ARM32 and ARM64 doesn't provide opengl32.lib, find alternatives */
+#if !defined(_M_ARM64) && !defined (_M_ARM)
+# define C_OPENGL 1
+#endif
+
+#if !defined(C_SDL2)
 /* Set to 1 to enable XBRZ support */
 #define C_XBRZ 1
 
@@ -121,6 +150,7 @@
 /* Please note that this option includes small part of xBRZ code and uses task group parallelism like xBRZ (batch size is hardcoded here) */
 #define C_SURFACE_POSTRENDER_ASPECT 1
 #define C_SURFACE_POSTRENDER_ASPECT_BATCH_SIZE 16
+#endif /*!defined(C_SDL2)*/
 
 /* Define to 1 if you have setpriority support */
 #undef C_SET_PRIORITY
@@ -148,11 +178,6 @@
 
 /* Define to 1 to use ALSA for MIDI */
 #undef HAVE_ALSA
-
-/* Define to 1 if you have the <d3d9.h> header file. */
-#if !defined(C_SDL2)
-#define HAVE_D3D9_H 1
-#endif
 
 /* Define to 1 if you have the <ddraw.h> header file. */
 #if !defined(C_SDL2)
@@ -220,7 +245,11 @@
 /* Define to the version of this package. */
 
 /* The size of `int *', as computed by sizeof. */
-#define SIZEOF_INT_P				4
+#if defined (_M_AMD64) || defined (_M_ARM64) /* Microsoft C++ amd64 and arm64*/
+# define SIZEOF_INT_P				8
+#else
+# define SIZEOF_INT_P				4
+#endif
 
 /* The size of `unsigned char', as computed by sizeof. */
 #define SIZEOF_UNSIGNED_CHAR		1

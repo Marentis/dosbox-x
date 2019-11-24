@@ -1,5 +1,5 @@
 /*
- *  Copyright (C) 2002-2015  The DOSBox Team
+ *  Copyright (C) 2002-2019  The DOSBox Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA.
  */
 
 
@@ -34,6 +34,9 @@
 #include "parport.h"
 #include "serialport.h"
 #include "dos_network.h"
+
+Bitu INT29_HANDLER(void);
+Bit32u BIOS_get_PC98_INT_STUB(void);
 
 int ascii_toupper(int c) {
     if (c >= 'a' && c <= 'z')
@@ -122,7 +125,7 @@ Bit32u DOS_HMA_GET_FREE_SPACE() {
 	return (DOS_HMA_LIMIT() - start);
 }
 
-void DOS_HMA_CLAIMED(Bitu bytes) {
+void DOS_HMA_CLAIMED(Bit16u bytes) {
 	Bit32u limit = DOS_HMA_LIMIT();
 
 	if (limit == 0) E_Exit("HMA allocatiom bug: Claim function called when HMA allocation is not enabled");
@@ -208,7 +211,7 @@ const Bit8u DOS_DATE_months[] = {
 	0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
 };
 
-static void DOS_AddDays(Bitu days) {
+static void DOS_AddDays(Bit8u days) {
 	dos.date.day += days;
 	Bit8u monthlimit = DOS_DATE_months[dos.date.month];
 
@@ -404,9 +407,18 @@ bool disk_io_unmask_irq0 = true;
 //! \brief Is a DOS program running ? (set by INT21 4B/4C)
 bool dos_program_running = false;
 
+void XMS_DOS_LocalA20EnableIfNotEnabled(void);
+
 #define DOSNAMEBUF 256
 static Bitu DOS_21Handler(void) {
     bool unmask_irq0 = false;
+
+    /* Real MS-DOS behavior:
+     *   If HIMEM.SYS is loaded and CONFIG.SYS says DOS=HIGH, DOS will load itself into the HMA area.
+     *   To prevent crashes, the INT 21h handler down below will enable the A20 gate before executing
+     *   the DOS kernel. */
+    if (DOS_IS_IN_HMA())
+        XMS_DOS_LocalA20EnableIfNotEnabled();
 
     if (((reg_ah != 0x50) && (reg_ah != 0x51) && (reg_ah != 0x62) && (reg_ah != 0x64)) && (reg_ah<0x6c)) {
         DOS_PSP psp(dos.psp());
@@ -422,7 +434,36 @@ static Bitu DOS_21Handler(void) {
 
     switch (reg_ah) {
         case 0x00:      /* Terminate Program */
-            DOS_Terminate(mem_readw(SegPhys(ss)+reg_sp+2),false,0);
+            /* HACK for demoscene prod parties/1995/wired95/surprisecode/w95spcod.zip/WINNERS/SURP-KLF
+             *
+             * This demo starts off by popping 3 words off the stack (the third into ES to get the top
+             * of DOS memory which it then uses to draw into VGA memory). Since SP starts out at 0xFFFE,
+             * that means SP wraps around to start popping values out of the PSP segment.
+             *
+             * Real MS-DOS will also start the demo with SP at 0xFFFE.
+             *
+             * The demo terminates with INT 20h.
+             *
+             * This code will fail since the stack pointer must wrap back around to read the segment,
+             * unless we read by popping. */
+            if (reg_sp > 0xFFFA) {
+                LOG(LOG_DOSMISC,LOG_WARN)("DOS:INT 20h/INT 21h AH=00h WARNING, process terminated where stack pointer wrapped around 64K");
+
+                uint16_t f_ip = CPU_Pop16();
+                uint16_t f_cs = CPU_Pop16();
+                uint16_t f_flags = CPU_Pop16();
+
+                (void)f_flags;
+                (void)f_ip;
+
+                LOG(LOG_DOSMISC,LOG_DEBUG)("DOS:INT 20h/INT 21h AH=00h recovered CS segment %04x",f_cs);
+
+                DOS_Terminate(f_cs,false,0);
+            }
+            else {
+                DOS_Terminate(mem_readw(SegPhys(ss)+reg_sp+2),false,0);
+            }
+
             if (DOS_BreakINT23InProgress) throw int(0); /* HACK: Ick */
             dos_program_running = false;
             break;
@@ -444,7 +485,7 @@ static Bitu DOS_21Handler(void) {
                 Bit8u c=reg_dl;Bit16u n=1;
                 DOS_WriteFile(STDOUT,&c,&n);
                 //Not in the official specs, but happens nonetheless. (last written character)
-                reg_al = c;// reg_al=(c==9)?0x20:c; //Officially: tab to spaces
+                reg_al=(c==9)?0x20:c; //strangely, tab conversion to spaces is reflected here
             }
             break;
         case 0x03:      /* Read character from STDAUX */
@@ -453,7 +494,7 @@ static Bitu DOS_21Handler(void) {
                 if(port!=0 && serialports[0]) {
                     Bit8u status;
                     // RTS/DTR on
-                    IO_WriteB(port+4u,0x3u);
+                    IO_WriteB((Bitu)port + 4u, 0x3u);
                     serialports[0]->Getchar(&reg_al, &status, true, 0xFFFFFFFF);
                 }
             }
@@ -463,10 +504,10 @@ static Bitu DOS_21Handler(void) {
                 Bit16u port = real_readw(0x40,0);
                 if(port!=0 && serialports[0]) {
                     // RTS/DTR on
-                    IO_WriteB(port+4u,0x3u);
+                    IO_WriteB((Bitu)port + 4u, 0x3u);
                     serialports[0]->Putchar(reg_dl,true,true, 0xFFFFFFFF);
                     // RTS off
-                    IO_WriteB(port+4u,0x1u);
+                    IO_WriteB((Bitu)port + 4u, 0x1u);
                 }
             }
             break;
@@ -503,11 +544,13 @@ static Bitu DOS_21Handler(void) {
                 default:
                     {
                         Bit8u c = reg_dl;Bit16u n = 1;
+                        dos.direct_output=true;
                         DOS_WriteFile(STDOUT,&c,&n);
-                        reg_al = reg_dl;
+                        dos.direct_output=false;
+                        reg_al=c;
                     }
                     break;
-            };
+            }
             break;
         case 0x07:      /* Character Input, without echo */
             {
@@ -515,7 +558,7 @@ static Bitu DOS_21Handler(void) {
                 DOS_ReadFile (STDIN,&c,&n);
                 reg_al=c;
                 break;
-            };
+            }
         case 0x08:      /* Direct Character Input, without echo (checks for breaks officially :)*/
             {
                 Bit8u c;Bit16u n=1;
@@ -526,7 +569,7 @@ static Bitu DOS_21Handler(void) {
                 }
                 reg_al=c;
                 break;
-            };
+            }
         case 0x09:      /* Write string to STDOUT */
             {   
                 Bit8u c;Bit16u n=1;
@@ -534,6 +577,7 @@ static Bitu DOS_21Handler(void) {
                 while ((c=mem_readb(buf++))!='$') {
                     DOS_WriteFile(STDOUT,&c,&n);
                 }
+                reg_al=c;
             }
             break;
         case 0x0a:      /* Buffered Input */
@@ -547,6 +591,10 @@ static Bitu DOS_21Handler(void) {
                 for(;;) {
                     if (!DOS_BreakTest()) return CBRET_NONE;
                     DOS_ReadFile(STDIN,&c,&n);
+                    if (n == 0)				// End of file
+                        E_Exit("DOS:0x0a:Redirected input reached EOF");
+                    if (c == 10)			// Line feed
+                        continue;
                     if (c == 8) {           // Backspace
                         if (read) { //Something to backspace.
                             // STDOUT treats backspace as non-destructive.
@@ -571,10 +619,10 @@ static Bitu DOS_21Handler(void) {
                     if (c==13) 
                         break;
                     read++;
-                };
+                }
                 mem_writeb(data+1,read);
                 break;
-            };
+            }
         case 0x0b:      /* Get STDIN Status */
             if (!DOS_GetSTDINStatus()) {reg_al=0x00;}
             else {reg_al=0xFF;}
@@ -669,12 +717,28 @@ static Bitu DOS_21Handler(void) {
             if (DOS_FCBRenameFile(SegValue(ds),reg_dx)) reg_al = 0x00;
             else reg_al = 0xFF;
             break;
+        case 0x18:      /* NULL Function for CP/M compatibility or Extended rename FCB */
+            goto default_fallthrough;
+        case 0x19:      /* Get current default drive */
+            reg_al = DOS_GetDefaultDrive();
+            break;
+        case 0x1a:      /* Set Disk Transfer Area Address */
+            dos.dta(RealMakeSeg(ds, reg_dx));
+            break;
         case 0x1b:      /* Get allocation info for default drive */ 
             if (!DOS_GetAllocationInfo(0,&reg_cx,&reg_al,&reg_dx)) reg_al=0xff;
             break;
         case 0x1c:      /* Get allocation info for specific drive */
             if (!DOS_GetAllocationInfo(reg_dl,&reg_cx,&reg_al,&reg_dx)) reg_al=0xff;
             break;
+        case 0x1d:      /* NULL Function for CP/M compatibility or Extended rename FCB */
+            goto default_fallthrough;
+        case 0x1e:      /* NULL Function for CP/M compatibility or Extended rename FCB */
+            goto default_fallthrough;
+        case 0x1f: /* Get drive parameter block for default drive */
+            goto case_0x32_fallthrough;
+        case 0x20:      /* NULL Function for CP/M compatibility or Extended rename FCB */
+            goto default_fallthrough;
         case 0x21:      /* Read random record from FCB */
             {
                 Bit16u toread=1;
@@ -696,6 +760,17 @@ static Bitu DOS_21Handler(void) {
         case 0x24:      /* Set Random Record number for FCB */
             DOS_FCBSetRandomRecord(SegValue(ds),reg_dx);
             break;
+        case 0x25:      /* Set Interrupt Vector */
+            RealSetVec(reg_al, RealMakeSeg(ds, reg_dx));
+            break;
+        case 0x26:      /* Create new PSP */
+            /* TODO: DEBUG.EXE/DEBUG.COM as shipped with MS-DOS seems to reveal a bug where,
+             *       when DEBUG.EXE calls this function and you're NOT loading a program to debug,
+             *       the CP/M CALL FAR instruction's offset field will be off by 2. When does
+             *       that happen, and how do we emulate that? */
+            DOS_NewPSP(reg_dx, DOS_PSP(dos.psp()).GetSize());
+            reg_al = 0xf0;    /* al destroyed */
+            break;
         case 0x27:      /* Random block read from FCB */
             reg_al = DOS_FCBRandomRead(SegValue(ds),reg_dx,&reg_cx,false);
             LOG(LOG_FCB,LOG_NORMAL)("DOS:0x27 FCB-Random(block) read used, result:al=%d",reg_al);
@@ -714,23 +789,6 @@ static Bitu DOS_21Handler(void) {
             }
             LOG(LOG_FCB,LOG_NORMAL)("DOS:29:FCB Parse Filename, result:al=%d",reg_al);
             break;
-        case 0x19:      /* Get current default drive */
-            reg_al=DOS_GetDefaultDrive();
-            break;
-        case 0x1a:      /* Set Disk Transfer Area Address */
-            dos.dta(RealMakeSeg(ds,reg_dx));
-            break;
-        case 0x25:      /* Set Interrupt Vector */
-            RealSetVec(reg_al,RealMakeSeg(ds,reg_dx));
-            break;
-        case 0x26:      /* Create new PSP */
-            /* TODO: DEBUG.EXE/DEBUG.COM as shipped with MS-DOS seems to reveal a bug where,
-             *       when DEBUG.EXE calls this function and you're NOT loading a program to debug,
-             *       the CP/M CALL FAR instruction's offset field will be off by 2. When does
-             *       that happen, and how do we emulate that? */
-            DOS_NewPSP(reg_dx,DOS_PSP(dos.psp()).GetSize());
-            reg_al=0xf0;    /* al destroyed */      
-            break;
         case 0x2a:      /* Get System Date */
             {
                 if(date_host_forced || IS_PC98_ARCH) {
@@ -746,7 +804,7 @@ static Bitu DOS_21Handler(void) {
                         SegSet16(es,SegValue(ss));
                         CALLBACK_RunRealInt(0x1c);
 
-                        Bitu memaddr = ((Bitu)SegValue(es) << 4u) + reg_bx;
+                        Bit32u memaddr = ((Bit32u)SegValue(es) << 4u) + reg_bx;
 
                         reg_sp += 6;
                         SegSet16(es,CPU_Pop16());
@@ -855,7 +913,7 @@ static Bitu DOS_21Handler(void) {
                     SegSet16(es,SegValue(ss));
                     CALLBACK_RunRealInt(0x1c);
 
-                    Bitu memaddr = ((PhysPt)SegValue(es) << 4u) + reg_bx;
+                    Bit32u memaddr = ((PhysPt)SegValue(es) << 4u) + reg_bx;
 
                     reg_sp += 6;
                     SegSet16(es,CPU_Pop16());
@@ -982,17 +1040,17 @@ static Bitu DOS_21Handler(void) {
             if (DOS_BreakINT23InProgress) throw int(0); /* HACK: Ick */
             dos_program_running = false;
             break;
-        case 0x1f: /* Get drive parameter block for default drive */
         case 0x32: /* Get drive parameter block for specific drive */
             {   /* Officially a dpb should be returned as well. The disk detection part is implemented */
+                case_0x32_fallthrough:
                 Bit8u drive=reg_dl;
                 if (!drive || reg_ah==0x1f) drive = DOS_GetDefaultDrive();
                 else drive--;
-                if (Drives[drive]) {
+                if (drive < DOS_DRIVES && Drives[drive] && !Drives[drive]->isRemovable()) {
                     reg_al = 0x00;
                     SegSet16(ds,dos.tables.dpb);
-                    reg_bx = drive;//Faking only the first entry (that is the driveletter)
-                    LOG(LOG_DOSMISC,LOG_ERROR)("Get drive parameter block.");
+                    reg_bx = drive*dos.tables.dpb_size;
+                    LOG(LOG_DOSMISC,LOG_NORMAL)("Get drive parameter block.");
                 } else {
                     reg_al=0xff;
                 }
@@ -1059,13 +1117,14 @@ static Bitu DOS_21Handler(void) {
                 case 0:
                     reg_al=0;reg_dl=0x2f;break;  /* always return '/' like dos 5.0+ */
                 case 1:
+                    LOG(LOG_MISC,LOG_DEBUG)("DOS:0x37:Attempted to set switch char");
                     reg_al=0;break;
                 case 2:
-                    reg_al=0;reg_dl=0x2f;break;
+                    reg_al=0;reg_dl=0xff;break;  /* AVAILDEV \DEV\ prefix optional */
                 case 3:
+                    LOG(LOG_MISC,LOG_DEBUG)("DOS:0x37:Attempted to set AVAILDEV \\DEV\\ prefix use");
                     reg_al=0;break;
-            };
-            LOG(LOG_MISC,LOG_ERROR)("DOS:0x37:Call for not supported switchchar");
+            }
             break;
         case 0x38:                  /* Set Country Code */  
             if (reg_al==0) {        /* Get country specidic information */
@@ -1110,7 +1169,7 @@ static Bitu DOS_21Handler(void) {
                 CALLBACK_SCF(true);
             }
             break;
-        case 0x3c:      /* CREATE Create of truncate file */
+        case 0x3c:      /* CREATE Create or truncate file */
             unmask_irq0 |= disk_io_unmask_irq0;
             MEM_StrCopy(SegPhys(ds)+reg_dx,name1,DOSNAMEBUF);
             if (DOS_CreateFile(name1,reg_cx,&reg_ax)) {
@@ -1210,7 +1269,7 @@ static Bitu DOS_21Handler(void) {
                 }
                 diskio_delay(reg_ax);
                 break;
-            };
+            }
         case 0x41:                  /* UNLINK Delete file */
             unmask_irq0 |= disk_io_unmask_irq0;
             MEM_StrCopy(SegPhys(ds)+reg_dx,name1,DOSNAMEBUF);
@@ -1253,7 +1312,7 @@ static Bitu DOS_21Handler(void) {
                             reg_ax=dos.errorcode;
                         }
                         break;
-                    };
+                    }
                 case 0x01:              /* Set */
                     LOG(LOG_MISC,LOG_ERROR)("DOS:Set File Attributes for %s not supported",name1);
                     if (DOS_SetFileAttr(name1,reg_cx)) {
@@ -1369,7 +1428,7 @@ static Bitu DOS_21Handler(void) {
             } else {
                 reg_ax=dos.errorcode;
                 CALLBACK_SCF(true);
-            };
+            }
             break;       
         case 0x4f:                  /* FINDNEXT Find next matching file */
             if (DOS_FindNext()) {
@@ -1379,7 +1438,7 @@ static Bitu DOS_21Handler(void) {
             } else {
                 reg_ax=dos.errorcode;
                 CALLBACK_SCF(true);
-            };
+            }
             break;      
         case 0x50:                  /* Set current PSP */
             dos.psp(reg_bx);
@@ -1388,6 +1447,9 @@ static Bitu DOS_21Handler(void) {
             reg_bx=dos.psp();
             break;
         case 0x52: {                /* Get list of lists */
+            Bit8u count=2; // floppy drives always counted
+            while (count<DOS_DRIVES && Drives[count] && !Drives[count]->isRemovable()) count++;
+            dos_infoblock.SetBlockDevices(count);
             RealPt addr=dos_infoblock.GetPointer();
             SegSet16(es,RealSeg(addr));
             reg_bx=RealOff(addr);
@@ -1534,9 +1596,12 @@ static Bitu DOS_21Handler(void) {
                 reg_si = DOS_SDA_OFS;
                 reg_cx = DOS_SDA_SEG_SIZE;  // swap if in dos
                 reg_dx = 0x1a;  // swap always (NTS: Size of DOS SDA structure in dos_inc)
-                LOG(LOG_DOSMISC,LOG_ERROR)("Get SDA, Let's hope for the best!");
+                LOG(LOG_DOSMISC,LOG_NORMAL)("Get SDA, Let's hope for the best!");
             }
             break;
+        case 0x5e:                  /* Network and printer functions */
+            LOG(LOG_DOSMISC, LOG_ERROR)("DOS:5E Network and printer functions not implemented");
+            goto default_fallthrough;
         case 0x5f:                  /* Network redirection */
 #if defined(WIN32) && !defined(HX_DOS)
             switch(reg_al)
@@ -1595,6 +1660,8 @@ static Bitu DOS_21Handler(void) {
                 CALLBACK_SCF(true);
             }
             break;
+        case 0x61:                  /* Unused (reserved for network use) */
+            goto default_fallthrough;
         case 0x62:                  /* Get Current PSP Address */
             reg_bx=dos.psp();
             break;
@@ -1611,7 +1678,7 @@ static Bitu DOS_21Handler(void) {
             break;
         case 0x65:                  /* Get extented country information and a lot of other useless shit*/
             { /* Todo maybe fully support this for now we set it standard for USA */ 
-                LOG(LOG_DOSMISC,LOG_ERROR)("DOS:65:Extended country information call %X",reg_ax);
+                LOG(LOG_DOSMISC,LOG_NORMAL)("DOS:65:Extended country information call %X",reg_ax);
                 if((reg_al <=  0x07) && (reg_cx < 0x05)) {
                     DOS_SetError(DOSERR_FUNCTION_NUMBER_INVALID);
                     CALLBACK_SCF(true);
@@ -1639,6 +1706,7 @@ static Bitu DOS_21Handler(void) {
                         CALLBACK_SCF(false);
                         break;
                     case 0x02: // Get pointer to uppercase table
+                    case 0x04: // Get pointer to filename uppercase table
                         mem_writeb(data + 0x00, reg_al);
                         mem_writed(data + 0x01, dos.tables.upcase);
                         reg_cx = 5;
@@ -1651,7 +1719,6 @@ static Bitu DOS_21Handler(void) {
                         CALLBACK_SCF(false);
                         break;
                     case 0x03: // Get pointer to lowercase table
-                    case 0x04: // Get pointer to filename uppercase table
                     case 0x07: // Get pointer to double byte char set table
                         if (dos.tables.dbcs != 0) {
                             mem_writeb(data + 0x00, reg_al);
@@ -1685,19 +1752,43 @@ static Bitu DOS_21Handler(void) {
                         }
                         CALLBACK_SCF(false);
                         break;
+                    case 0x23: /* Determine if character represents yes/no response (MS-DOS 4.0+) */
+                        /* DL = character
+                         * DH = second char of double-byte char if DBCS */
+                        /* response: CF=1 if error (what error?) or CF=0 and AX=response
+                         *
+                         * response values 0=no 1=yes 2=neither */
+                        /* FORMAT.COM and FDISK.EXE rely on this call after prompting the user */
+                        {
+                            unsigned int c;
+
+                            if (IS_PC98_ARCH)
+                                c = reg_dx; // DBCS
+                            else
+                                c = reg_dl; // SBCS
+
+                            if (tolower(c) == 'y')
+                                reg_ax = 1;/*yes*/
+                            else if (tolower(c) == 'n')
+                                reg_ax = 0;/*no*/
+                            else
+                                reg_ax = 2;/*neither*/
+                        }
+                        CALLBACK_SCF(false);
+                        break;
                     default:
                         E_Exit("DOS:0x65:Unhandled country information call %2X",reg_al);   
-                };
+                }
                 break;
             }
         case 0x66:                  /* Get/Set global code page table  */
             if (reg_al==1) {
-                LOG(LOG_DOSMISC,LOG_ERROR)("Getting global code page table");
+                LOG(LOG_DOSMISC,LOG_NORMAL)("Getting global code page table");
                 reg_bx=reg_dx=dos.loaded_codepage;
                 CALLBACK_SCF(false);
                 break;
             }
-            LOG(LOG_DOSMISC,LOG_NORMAL)("DOS:Setting code page table is not supported");
+            LOG(LOG_DOSMISC,LOG_ERROR)("DOS:Setting code page table is not supported");
             break;
         case 0x67:                  /* Set handle count */
             /* Weird call to increase amount of file handles needs to allocate memory if >20 */
@@ -1706,8 +1797,9 @@ static Bitu DOS_21Handler(void) {
                 psp.SetNumFiles(reg_bx);
                 CALLBACK_SCF(false);
                 break;
-            };
+            }
         case 0x68:                  /* FFLUSH Commit file */
+            case_0x68_fallthrough:
             if(DOS_FlushFile(reg_bl)) {
                 CALLBACK_SCF(false);
             } else {
@@ -1717,18 +1809,30 @@ static Bitu DOS_21Handler(void) {
             break;
         case 0x69:                  /* Get/Set disk serial number */
             {
+                Bit16u old_cx=reg_cx;
                 switch(reg_al)      {
                     case 0x00:              /* Get */
-                        LOG(LOG_DOSMISC,LOG_ERROR)("DOS:Get Disk serial number");
-                        CALLBACK_SCF(true);
+                        LOG(LOG_DOSMISC,LOG_NORMAL)("DOS:Get Disk serial number");
+                        reg_cl=0x66;// IOCTL function
                         break;
-                    case 0x01:
-                        LOG(LOG_DOSMISC,LOG_ERROR)("DOS:Set Disk serial number");
+                    case 0x01:              /* Set */
+                        LOG(LOG_DOSMISC,LOG_NORMAL)("DOS:Set Disk serial number");
+                        reg_cl=0x46;// IOCTL function
+                        break;
                     default:
                         E_Exit("DOS:Illegal Get Serial Number call %2X",reg_al);
-                }   
+                }
+                reg_ch=0x08;    // IOCTL category: disk drive
+                reg_ax=0x440d;  // Generic block device request
+                DOS_21Handler();
+                reg_cx=old_cx;
                 break;
-            } 
+            }
+        case 0x6a:                  /* Commit file */
+            // Note: Identical to AH=68h in DOS 5.0-6.0; not known whether this is the case in DOS 4.x
+            goto case_0x68_fallthrough;
+        case 0x6b:                  /* NULL Function */
+            goto default_fallthrough;
         case 0x6c:                  /* Extended Open/Create */
             MEM_StrCopy(SegPhys(ds)+reg_si,name1,DOSNAMEBUF);
             if (DOS_OpenFileExtended(name1,reg_bx,reg_cx,reg_dx,&reg_ax,&reg_cx)) {
@@ -1738,27 +1842,28 @@ static Bitu DOS_21Handler(void) {
                 CALLBACK_SCF(true);
             }
             break;
-
+        case 0x6d:                  /* ROM - Find first ROM program */
+            LOG(LOG_DOSMISC, LOG_ERROR)("DOS:ROM - Find first ROM program not implemented");
+            goto default_fallthrough;
+        case 0x6e:                  /* ROM - Find next ROM program */
+            LOG(LOG_DOSMISC, LOG_ERROR)("DOS:ROM - Find next ROM program not implemented");
+            goto default_fallthrough;
+        case 0x6f:                  /* ROM functions */
+            LOG(LOG_DOSMISC, LOG_ERROR)("DOS:6F ROM functions not implemented");
+            goto default_fallthrough;
         case 0x71:                  /* Unknown probably 4dos detection */
             reg_ax=0x7100;
             CALLBACK_SCF(true); //Check this! What needs this ? See default case
             LOG(LOG_DOSMISC,LOG_NORMAL)("DOS:Windows long file name support call %2X",reg_al);
             break;
-
         case 0xE0:
-        case 0x18:                  /* NULL Function for CP/M compatibility or Extended rename FCB */
-        case 0x1d:                  /* NULL Function for CP/M compatibility or Extended rename FCB */
-        case 0x1e:                  /* NULL Function for CP/M compatibility or Extended rename FCB */
-        case 0x20:                  /* NULL Function for CP/M compatibility or Extended rename FCB */
-        case 0x6b:                  /* NULL Function */
-        case 0x61:                  /* UNUSED */
         case 0xEF:                  /* Used in Ancient Art Of War CGA */
-        case 0x5e:                  /* More Network Functions */
         default:
-            if (reg_ah < 0x6d) LOG(LOG_DOSMISC,LOG_ERROR)("DOS:Unhandled call %02X al=%02X. Set al to default of 0",reg_ah,reg_al); //Less errors. above 0x6c the functions are simply always skipped, only al is zeroed, all other registers untouched
+            default_fallthrough:
+            if (reg_ah < 0x6b) LOG(LOG_DOSMISC,LOG_ERROR)("DOS:Unhandled call %02X al=%02X. Set al to default of 0",reg_ah,reg_al); //Less errors. above 0x6c the functions are simply always skipped, only al is zeroed, all other registers untouched
             reg_al=0x00; /* default value */
             break;
-    };
+    }
 
     /* if INT 21h involves any BIOS calls that need the timer, emulate the fact that tbe
      * BIOS might unmask IRQ 0 as part of the job (especially INT 13h disk I/O).
@@ -1820,56 +1925,196 @@ static Bitu DOS_27Handler(void) {
 	return CBRET_NONE;
 }
 
-extern DOS_Device *DOS_CON;
-
-/* PC-98 INT DC CL=0x10 AH=0x00 DL=cjar */
-void PC98_INTDC_WriteChar(unsigned char b) {
-    if (DOS_CON != NULL) {
-        Bit16u sz = 1;
-
-        DOS_CON->Write(&b,&sz);
-    }
-}
-
-static Bitu INT29_HANDLER(void) {
-    if (DOS_CON != NULL) {
-        unsigned char b = reg_al;
-        Bit16u sz = 1;
-
-        DOS_CON->Write(&b,&sz);
-    }
-
-    return CBRET_NONE;
-}
-
 static Bitu DOS_25Handler(void) {
-	if (Drives[reg_al] == 0){
-		reg_ax = 0x8002;
-		SETFLAGBIT(CF,true);
-	} else {
-		SETFLAGBIT(CF,false);
-		if ((reg_cx != 1) ||(reg_dx != 1))
-			LOG(LOG_DOSMISC,LOG_NORMAL)("int 25 called but not as diskdetection drive %X",reg_al);
+	if (reg_al >= DOS_DRIVES || !Drives[reg_al] || Drives[reg_al]->isRemovable()) {
+        reg_ax = 0x8002;
+        SETFLAGBIT(CF,true);
+    } else {
+        DOS_Drive *drv = Drives[reg_al];
+        /* assume drv != NULL */
+        Bit32u sector_size = drv->GetSectorSize();
+        Bit32u sector_count = drv->GetSectorCount();
+        PhysPt ptr = PhysMake(SegValue(ds),reg_bx);
+        Bit32u req_count = reg_cx;
+        Bit32u sector_num = reg_dx;
 
-	   reg_ax = 0;
-	}
-	SETFLAGBIT(IF,true);
+        /* For < 32MB drives.
+         *  AL = drive
+         *  CX = sector count (not 0xFFFF)
+         *  DX = sector number
+         *  DS:BX = pointer to disk transfer area
+         *
+         * For >= 32MB drives.
+         *
+         *  AL = drive
+         *  CX = 0xFFFF
+         *  DS:BX = disk read packet
+         *
+         *  Disk read packet:
+         *    +0 DWORD = sector number
+         *    +4 WORD = sector count
+         *    +6 DWORD = disk tranfer area
+         */
+        if (sector_count != 0 && sector_size != 0) {
+            unsigned char tmp[2048];
+            const char *method;
+
+            if (sector_size > sizeof(tmp)) {
+                reg_ax = 0x8002;
+                SETFLAGBIT(CF,true);
+                return CBRET_NONE;
+            }
+
+            if (sector_count > 0xFFFF && req_count != 0xFFFF) {
+                reg_ax = 0x0207; // must use CX=0xFFFF API for > 64KB segment partitions
+                SETFLAGBIT(CF,true);
+                return CBRET_NONE;
+            }
+
+            if (req_count == 0xFFFF) {
+                sector_num = mem_readd(ptr+0);
+                req_count = mem_readw(ptr+4);
+                Bit32u p = mem_readd(ptr+6);
+                ptr = PhysMake(p >> 16u,p & 0xFFFFu);
+                method = ">=32MB";
+            }
+            else {
+                method = "<32MB";
+            }
+
+            LOG(LOG_MISC,LOG_DEBUG)("INT 25h READ: sector=%lu count=%lu ptr=%lx method='%s'",
+                (unsigned long)sector_num,
+                (unsigned long)req_count,
+                (unsigned long)ptr,
+                method);
+
+            SETFLAGBIT(CF,false);
+            reg_ax = 0;
+
+            while (req_count > 0) {
+                Bit8u res = drv->Read_AbsoluteSector_INT25(sector_num,tmp);
+                if (res != 0) {
+                    reg_ax = 0x8002;
+                    SETFLAGBIT(CF,true);
+                    break;
+                }
+
+                for (unsigned int i=0;i < (unsigned int)sector_size;i++)
+                    mem_writeb(ptr+i,tmp[i]);
+
+                req_count--;
+                sector_num++;
+                ptr += sector_size;
+            }
+
+            return CBRET_NONE;
+        }
+
+        /* MicroProse installer hack, inherited from DOSBox SVN, as a fallback if INT 25h emulation is not available for the drive. */
+        if (reg_cx == 1 && reg_dx == 0 && reg_al >= 2) {
+            // write some BPB data into buffer for MicroProse installers
+            mem_writew(ptr+0x1c,0x3f); // hidden sectors
+            SETFLAGBIT(CF,false);
+            reg_ax = 0;
+        } else {
+            LOG(LOG_DOSMISC,LOG_NORMAL)("int 25 called but not as disk detection drive %u",reg_al);
+            reg_ax = 0x8002;
+            SETFLAGBIT(CF,true);
+        }
+    }
     return CBRET_NONE;
 }
 static Bitu DOS_26Handler(void) {
-	LOG(LOG_DOSMISC,LOG_NORMAL)("int 26 called: hope for the best!");
-	if (Drives[reg_al] == 0){
+	if (reg_al >= DOS_DRIVES || !Drives[reg_al] || Drives[reg_al]->isRemovable()) {	
 		reg_ax = 0x8002;
 		SETFLAGBIT(CF,true);
-	} else {
-		SETFLAGBIT(CF,false);
-		reg_ax = 0;
-	}
-	SETFLAGBIT(IF,true);
+    } else {
+        DOS_Drive *drv = Drives[reg_al];
+        /* assume drv != NULL */
+        Bit32u sector_size = drv->GetSectorSize();
+        Bit32u sector_count = drv->GetSectorCount();
+        PhysPt ptr = PhysMake(SegValue(ds),reg_bx);
+        Bit32u req_count = reg_cx;
+        Bit32u sector_num = reg_dx;
+
+        /* For < 32MB drives.
+         *  AL = drive
+         *  CX = sector count (not 0xFFFF)
+         *  DX = sector number
+         *  DS:BX = pointer to disk transfer area
+         *
+         * For >= 32MB drives.
+         *
+         *  AL = drive
+         *  CX = 0xFFFF
+         *  DS:BX = disk read packet
+         *
+         *  Disk read packet:
+         *    +0 DWORD = sector number
+         *    +4 WORD = sector count
+         *    +6 DWORD = disk tranfer area
+         */
+        if (sector_count != 0 && sector_size != 0) {
+            unsigned char tmp[2048];
+            const char *method;
+
+            if (sector_size > sizeof(tmp)) {
+                reg_ax = 0x8002;
+                SETFLAGBIT(CF,true);
+                return CBRET_NONE;
+            }
+
+            if (sector_count > 0xFFFF && req_count != 0xFFFF) {
+                reg_ax = 0x0207; // must use CX=0xFFFF API for > 64KB segment partitions
+                SETFLAGBIT(CF,true);
+                return CBRET_NONE;
+            }
+
+            if (req_count == 0xFFFF) {
+                sector_num = mem_readd(ptr+0);
+                req_count = mem_readw(ptr+4);
+                Bit32u p = mem_readd(ptr+6);
+                ptr = PhysMake(p >> 16u,p & 0xFFFFu);
+                method = ">=32MB";
+            }
+            else {
+                method = "<32MB";
+            }
+
+            LOG(LOG_MISC,LOG_DEBUG)("INT 26h WRITE: sector=%lu count=%lu ptr=%lx method='%s'",
+                (unsigned long)sector_num,
+                (unsigned long)req_count,
+                (unsigned long)ptr,
+                method);
+
+            SETFLAGBIT(CF,false);
+            reg_ax = 0;
+
+            while (req_count > 0) {
+                for (unsigned int i=0;i < (unsigned int)sector_size;i++)
+                    tmp[i] = mem_readb(ptr+i);
+
+                Bit8u res = drv->Write_AbsoluteSector_INT25(sector_num,tmp);
+                if (res != 0) {
+                    reg_ax = 0x8002;
+                    SETFLAGBIT(CF,true);
+                    break;
+                }
+
+                req_count--;
+                sector_num++;
+                ptr += sector_size;
+            }
+
+            return CBRET_NONE;
+        }
+
+        reg_ax = 0x8002;
+        SETFLAGBIT(CF,true);
+    }
     return CBRET_NONE;
 }
 
-bool iret_only_for_debug_interrupts = true;
 bool enable_collating_uppercase = true;
 bool keep_private_area_on_boot = false;
 bool private_always_from_umb = false;
@@ -1963,7 +2208,7 @@ public:
         }
     }
 
-    Bitu DOS_Get_CPM_entry_direct(void) {
+    Bit32u DOS_Get_CPM_entry_direct(void) {
         return callback[8].Get_RealPointer();
     }
 
@@ -1994,7 +2239,6 @@ public:
 		private_always_from_umb = section->Get_bool("kernel allocation in umb");
 		minimum_dos_initial_private_segment = section->Get_hex("minimum dos initial private segment");
 		dos_con_use_int16_to_detect_input = section->Get_bool("con device use int 16h to detect keyboard input");
-		iret_only_for_debug_interrupts = section->Get_bool("write plain iretf for debug interrupts");
 		dbg_zero_on_dos_allocmem = section->Get_bool("zero memory on int 21h memory allocation");
 		MAXENV = (unsigned int)section->Get_int("maximum environment block size on exec");
 		ENV_KEEPFREE = (unsigned int)section->Get_int("additional environment block size on exec");
@@ -2094,7 +2338,7 @@ public:
             if (MEM_TotalPages() > 0x9C)
                 DOS_PRIVATE_SEGMENT_END = 0x9C00;
             else
-                DOS_PRIVATE_SEGMENT_END = (MEM_TotalPages() << (12 - 4)) - 1; /* NTS: Remember DOSBox's implementation reuses the last paragraph for UMB linkage */
+                DOS_PRIVATE_SEGMENT_END = (Bit16u)((MEM_TotalPages() << (12 - 4)) - 1); /* NTS: Remember DOSBox's implementation reuses the last paragraph for UMB linkage */
         }
 
         LOG(LOG_MISC,LOG_DEBUG)("DOS kernel structures will be allocated from pool 0x%04x-0x%04x",
@@ -2133,10 +2377,10 @@ public:
 	// iret
 	// retf  <- int 21 4c jumps here to mimic a retf Cyber
 
-		callback[2].Install(DOS_25Handler,CB_RETF,"DOS Int 25");
+		callback[2].Install(DOS_25Handler,CB_RETF_STI,"DOS Int 25");
 		callback[2].Set_RealVec(0x25);
 
-		callback[3].Install(DOS_26Handler,CB_RETF,"DOS Int 26");
+		callback[3].Install(DOS_26Handler,CB_RETF_STI,"DOS Int 26");
 		callback[3].Set_RealVec(0x26);
 
 		callback[4].Install(DOS_27Handler,CB_IRET,"DOS Int 27");
@@ -2181,6 +2425,29 @@ public:
 		//	pushf
 		//	... the rest is like int 21
 
+        if (IS_PC98_ARCH) {
+            /* Any interrupt vector pointing to the INT stub in the BIOS must be rewritten to point to a JMP to the stub
+             * residing in the DOS segment (60h) because some PC-98 resident drivers use segment 60h as a check for
+             * installed vs uninstalled (MUSIC.COM, Peret em Heru) */
+            Bit16u sg = DOS_GetMemory(1/*paragraph*/,"INT stub trampoline");
+            PhysPt sgp = (PhysPt)sg << (PhysPt)4u;
+
+            /* Re-base the pointer so the segment is 0x60 */
+            Bit32u veco = sgp - 0x600;
+            if (veco >= 0xFFF0u) E_Exit("INT stub trampoline out of bounds");
+            Bit32u vecp = RealMake(0x60,(Bit16u)veco);
+
+            mem_writeb(sgp+0,0xEA);
+            mem_writed(sgp+1,BIOS_get_PC98_INT_STUB());
+
+            for (unsigned int i=0;i < 0x100;i++) {
+                Bit32u vec = RealGetVec(i);
+
+                if (vec == BIOS_get_PC98_INT_STUB())
+                    mem_writed(i*4,vecp);
+            }
+        }
+
         /* NTS: HMA support requires XMS. EMS support may switch on A20 if VCPI emulation requires the odd megabyte */
         if ((!dos_in_hma || !section->Get_bool("xms")) && (MEM_A20_Enabled() || strcmp(section->Get_string("ems"),"false") != 0) &&
             cpm_compat_mode != CPM_COMPAT_OFF && cpm_compat_mode != CPM_COMPAT_DIRECT) {
@@ -2210,7 +2477,7 @@ public:
 				unsigned int segend;
 
 				seg = DOS_MEM_START;
-				DOS_MEM_START += DOS_PRIVATE_SEGMENT_Size;
+				DOS_MEM_START += (Bit16u)DOS_PRIVATE_SEGMENT_Size;
 				segend = DOS_MEM_START;
 
 				if (segend >= (MEM_TotalPages() << (12 - 4)))
@@ -2235,13 +2502,32 @@ public:
 		/* carry on setup */
 		DOS_SetupMemory();								/* Setup first MCB */
 
+        /* NTS: The reason PC-98 has a higher minimum free is that the MS-DOS kernel
+         *      has a larger footprint in memory, including fixed locations that
+         *      some PC-98 games will read directly, and an ANSI driver.
+         *
+         *      Some PC-98 games will have problems if loaded below a certain
+         *      threshhold as well.
+         *
+         *        Valkyrie: 0xE10 is not enough for the game to run. If a specific
+         *                  FM music selection is chosen, the remaining memory is
+         *                  insufficient for the game to start the battle.
+         *
+         *      The default assumes a DOS kernel and lower memory region of 32KB,
+         *      which might be a reasonable compromise so far.
+         *
+         * NOTES: A minimum mcb free value of at least 0xE10 is needed for Windows 3.1
+         *        386 enhanced to start, else it will complain about insufficient memory (?).
+         *        To get Windows 3.1 to run, either set "minimum mcb free=e10" or run
+         *        "LOADFIX" before starting Windows 3.1 */
+
         /* NTS: There is a mysterious memory corruption issue with some DOS games
          *      and applications when they are loaded at or around segment 0x800.
          *      This should be looked into. In the meantime, setting the MCB
          *      start segment before or after 0x800 helps to resolve these issues.
          *      It also puts DOSBox-X at parity with main DOSBox SVN behavior. */
         if (minimum_mcb_free == 0)
-            minimum_mcb_free = 0x100;
+            minimum_mcb_free = IS_PC98_ARCH ? 0x800 : 0x100;
         else if (minimum_mcb_free < minimum_mcb_segment)
             minimum_mcb_free = minimum_mcb_segment;
 
@@ -2267,7 +2553,7 @@ public:
             }
 
             if (sg != 0 && sg < minimum_mcb_free) {
-                Bit16u tmp = minimum_mcb_free - sg;
+                tmp = minimum_mcb_free - sg;
                 if (!DOS_ResizeMemory(sg,&tmp)) {
                     LOG(LOG_MISC,LOG_DEBUG)("    WARNING: cannot resize min free pad");
                 }
@@ -2283,6 +2569,8 @@ public:
 	
 		dos.version.major=5;
 		dos.version.minor=0;
+		dos.direct_output=false;
+		dos.internal_output=false;
 
 		std::string ver = section->Get_string("ver");
 		if (!ver.empty()) {
@@ -2310,6 +2598,13 @@ public:
 						dos.version.major, dos.version.minor);
 			}
 		}
+
+        if (IS_PC98_ARCH) {
+            void PC98_InitDefFuncRow(void);
+            PC98_InitDefFuncRow();
+
+            real_writeb(0x60,0x113,0x01); /* 25-line mode */
+        }
 	}
 	~DOS(){
 		/* NTS: We do NOT free the drives! The OS may use them later! */
@@ -2329,7 +2624,7 @@ void DOS_Write_HMA_CPM_jmp(void) {
     test->DOS_Write_HMA_CPM_jmp();
 }
 
-Bitu DOS_Get_CPM_entry_direct(void) {
+Bit32u DOS_Get_CPM_entry_direct(void) {
     assert(test != NULL);
     return test->DOS_Get_CPM_entry_direct();
 }
@@ -2354,8 +2649,7 @@ void DOS_ShutdownDrives() {
 	}
 }
 
-void update_pc98_function_row(bool enable);
-void DOS_UnsetupMemory();
+void update_pc98_function_row(unsigned char setting,bool force_redraw=false);
 void DOS_Casemap_Free();
 
 void DOS_DoShutDown() {
@@ -2364,9 +2658,8 @@ void DOS_DoShutDown() {
 		test = NULL;
 	}
 
-    if (IS_PC98_ARCH) update_pc98_function_row(false);
+    if (IS_PC98_ARCH) update_pc98_function_row(0);
 
-    DOS_UnsetupMemory();
     DOS_Casemap_Free();
 }
 

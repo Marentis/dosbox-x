@@ -1,3 +1,3 @@
 /*auto-generated*/
-#define UPDATED_STR "Jun 27, 2018 11:42:01am"
-#define COPYRIGHT_END_YEAR "2018"
+#define UPDATED_STR "Nov 3, 2019 10:35:45am"
+#define COPYRIGHT_END_YEAR "2019"
